@@ -20,6 +20,11 @@ ALLOWED_ORIGIN="${ALLOWED_ORIGIN:-https://basalt-os.org}"
 SITE_URL="${SITE_URL:-https://basalt-os.org}"
 RATE_PER_HOUR="${RATE_PER_HOUR:-5}"
 DAILY_CAP="${DAILY_CAP:-500}"
+# E-mail notification: set NOTIFY=1 once Email Routing on obpkg.org is on
+# and NOTIFY_TO is a verified destination (scripts/email-routing.sh).
+NOTIFY="${NOTIFY:-0}"
+NOTIFY_FROM="${NOTIFY_FROM:-feedback-bot@obpkg.org}"
+NOTIFY_TO="${NOTIFY_TO:-feedback@basalt-os.org}"
 COMPAT_DATE="2026-09-01"
 
 CF_DIR="${CF_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/obpkg-cf}"
@@ -93,20 +98,25 @@ echo "lifecycle rules set (ratelimit/, meta/salt/: 2 days)"
 
 # 3. The Worker, an ES module with its bindings.
 jq -n --arg compat "$COMPAT_DATE" --arg bucket "$BUCKET" --arg origin "$ALLOWED_ORIGIN" \
-  --arg site "$SITE_URL" --arg rate "$RATE_PER_HOUR" --arg cap "$DAILY_CAP" '{
+  --arg site "$SITE_URL" --arg rate "$RATE_PER_HOUR" --arg cap "$DAILY_CAP" \
+  --arg notify "$NOTIFY" --arg from "$NOTIFY_FROM" --arg to "$NOTIFY_TO" '{
   main_module: "worker.js",
   compatibility_date: $compat,
-  bindings: [
+  bindings: ([
     {type: "r2_bucket", name: "FEEDBACK", bucket_name: $bucket},
     {type: "plain_text", name: "ALLOWED_ORIGIN", text: $origin},
     {type: "plain_text", name: "SITE_URL", text: $site},
     {type: "plain_text", name: "RATE_PER_HOUR", text: $rate},
     {type: "plain_text", name: "DAILY_CAP", text: $cap}
-  ]}' >"$work/metadata.json"
+  ] + (if $notify == "1" then [
+    {type: "send_email", name: "NOTIFY", destination_address: $to},
+    {type: "plain_text", name: "NOTIFY_FROM", text: $from},
+    {type: "plain_text", name: "NOTIFY_TO", text: $to}
+  ] else [] end))}' >"$work/metadata.json"
 cf PUT "/workers/scripts/$NAME" \
   -F "metadata=@$work/metadata.json;type=application/json" \
   -F "worker.js=@src/worker.js;type=application/javascript+module" >/dev/null
-echo "worker $NAME uploaded"
+echo "worker $NAME uploaded (e-mail notification: $([[ "$NOTIFY" == 1 ]] && echo "on, $NOTIFY_FROM to $NOTIFY_TO" || echo off))"
 
 # 4. Serve it on workers.dev (no zone route), without preview URLs.
 ensure_subdomain

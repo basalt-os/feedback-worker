@@ -10,7 +10,15 @@ ALLOWED_ORIGIN = "https://basalt-os.org"
 SITE_URL = "https://basalt-os.org"
 RATE_PER_HOUR = "5"
 DAILY_CAP = "500"
+NOTIFY_FROM = "feedback-bot@obpkg.org"
+NOTIFY_TO = "feedback@basalt-os.org"
 
 [[r2_buckets]]
 binding = "FEEDBACK"
 bucket_name = "basalt-feedback"
+
+# E-mail notification of every submission (Cloudflare Email Routing on
+# obpkg.org; the destination must be a verified address).
+[[send_email]]
+name = "NOTIFY"
+destination_address = "feedback@basalt-os.org"

@@ -252,7 +252,7 @@ async function rateLimit(bucket, env, ip, now) {
   await bucket.put(totalKey, String(total + 1));
 }
 
-// store writes one submission and returns its id.
+// store writes one submission and returns the stored record.
 async function store(bucket, sub, now) {
   const iso = now.toISOString();
   const stamp = iso.replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z"); // 20261004T153012Z
@@ -263,10 +263,94 @@ async function store(bucket, sub, now) {
     httpMetadata: { contentType: "application/json; charset=utf-8" },
     customMetadata: { kind: sub.kind, source: sub.source },
   });
-  return id;
+  return record;
 }
 
-async function handlePost(request, env, now) {
+// --- E-mail notification (optional) ---------------------------------------
+//
+// With a send_email binding NOTIFY and the variables NOTIFY_FROM and
+// NOTIFY_TO, every stored submission is also sent as a plain-text e-mail
+// (Cloudflare Email Routing). It runs after the submission is stored and
+// after the answer, through waitUntil: a failure is logged and never loses
+// or refuses a submission. The person's e-mail, when given, becomes the
+// Reply-To. No IP address or other request data is in the message.
+
+// b64 encodes UTF-8 text as base64.
+function b64(text) {
+  const bytes = new TextEncoder().encode(text);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
+
+// encodeHeader returns an RFC 2047 encoded word for any text, so user text
+// can never break out of a header line.
+function encodeHeader(text) {
+  return `=?UTF-8?B?${b64(text)}?=`;
+}
+
+const KIND_LABEL = { bug: "bug", idea: "idea", other: "other" };
+
+// notificationText is the plain-text body of the notification.
+export function notificationText(record) {
+  const lines = [
+    `Kind: ${KIND_LABEL[record.kind] || record.kind}`,
+    `Source: ${record.source}`,
+    `Received: ${record.received_at}`,
+    `Id: ${record.id}`,
+  ];
+  if (record.email) lines.push(`Reply to: ${record.email}`);
+  if (record.client) lines.push(`Client: ${record.client}`);
+  if (record.lang) lines.push(`Language: ${record.lang}`);
+  lines.push("", "Message:", "", record.message);
+  if (record.system) {
+    lines.push("", "System:", "");
+    lines.push(typeof record.system === "string" ? record.system : JSON.stringify(record.system, null, 2));
+  }
+  lines.push("", "--", "Basalt OS feedback endpoint. The submission is stored in the basalt-feedback bucket.");
+  return lines.join("\r\n").replace(/\r?\n/g, "\r\n");
+}
+
+// notificationMIME builds the raw message (RFC 5322, base64 body).
+export function notificationMIME(record, { from, to, now = new Date() }) {
+  const first = record.message.split("\n")[0];
+  const short = [...first].length > 60 ? [...first].slice(0, 60).join("") + " (more)" : first;
+  const domain = from.split("@")[1] || "localhost";
+  const headers = [
+    `From: Basalt OS feedback <${from}>`,
+    `To: <${to}>`,
+    `Subject: ${encodeHeader(`[Basalt OS feedback] ${record.kind}: ${short}`)}`,
+    `Date: ${now.toUTCString().replace("GMT", "+0000")}`,
+    `Message-ID: <${record.id}@${domain}>`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: base64",
+    "Auto-Submitted: auto-generated",
+  ];
+  if (record.email) headers.push(`Reply-To: <${record.email}>`);
+  const body = b64(notificationText(record)).replace(/.{76}/g, "$&\r\n");
+  return headers.join("\r\n") + "\r\n\r\n" + body + "\r\n";
+}
+
+// notify sends the notification when it is configured. EmailMessage comes
+// from the Workers runtime (cloudflare:email); tests pass their own.
+async function notify(env, record, now) {
+  const from = env && env.NOTIFY_FROM;
+  const to = env && env.NOTIFY_TO;
+  if (!env || !env.NOTIFY || !from || !to) return false;
+  try {
+    const EmailMessage = env.EmailMessage || (await import("cloudflare:email")).EmailMessage;
+    await env.NOTIFY.send(new EmailMessage(from, to, notificationMIME(record, { from, to, now })));
+    return true;
+  } catch (e) {
+    console.error("feedback: notification failed for", record.id, e && e.message);
+    return false;
+  }
+}
+
+async function handlePost(request, env, now, ctx) {
   const origin = request.headers.get("Origin");
   const allowed = allowedOrigins(env);
   const site = conf(env, "SITE_URL").replace(/\/+$/, "");
@@ -314,7 +398,11 @@ async function handlePost(request, env, now) {
     if (!bucket) throw new Refusal(500, "not_configured");
     const ip = request.headers.get("CF-Connecting-IP") || "unknown";
     await rateLimit(bucket, env, ip, now);
-    const id = await store(bucket, sub, now);
+    const record = await store(bucket, sub, now);
+    const id = record.id;
+    const sent = notify(env, record, now);
+    if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(sent);
+    else await sent;
     return isForm ? redirect(`${site}/feedback/sent.html`) : json(201, { ok: true, id }, cors);
   } catch (e) {
     if (e instanceof Refusal) return fail(e.status, e.code, e.extra);
@@ -331,10 +419,10 @@ function handleOptions(request, env) {
   return new Response(null, { status: 204, headers: { ...BASE_HEADERS, ...corsHeaders(origin) } });
 }
 
-export async function handle(request, env, now = new Date()) {
+export async function handle(request, env, now = new Date(), ctx = undefined) {
   const url = new URL(request.url);
   if (url.pathname === PATH) {
-    if (request.method === "POST") return handlePost(request, env, now);
+    if (request.method === "POST") return handlePost(request, env, now, ctx);
     if (request.method === "OPTIONS") return handleOptions(request, env);
     return json(405, { ok: false, error: "method" }, { Allow: "POST, OPTIONS" });
   }
@@ -349,7 +437,7 @@ export async function handle(request, env, now = new Date()) {
 }
 
 export default {
-  fetch(request, env) {
-    return handle(request, env);
+  fetch(request, env, ctx) {
+    return handle(request, env, new Date(), ctx);
   },
 };

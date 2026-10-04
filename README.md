@@ -40,6 +40,24 @@ Each submission is one object, `submissions/YYYY/MM/DD/<id>.json`:
   lifecycle rules delete the counters and the salts after two days; after
   that, nobody can link a counter to an address.
 
+## E-mail notification
+
+With a `send_email` binding `NOTIFY` and the variables `NOTIFY_FROM` and
+`NOTIFY_TO`, each stored submission is also sent as a plain-text e-mail
+through Cloudflare Email Routing: from `feedback-bot@obpkg.org` to the
+verified address `feedback@basalt-os.org`, with the kind, the message, the
+system details, the id and, when the person gave an e-mail, a `Reply-To`
+so the team can answer directly. User text goes into headers only as
+encoded words, so it cannot add headers. The e-mail is sent after the
+submission is stored and after the answer (`waitUntil`); if it fails, the
+failure is logged and the submission stays stored. No IP address or other
+request data is in it.
+
+Setup, once: `scripts/email-routing.sh enable` (Email Routing on the
+sending zone, which adds its MX and SPF records), `scripts/email-routing.sh
+add-destination` (Cloudflare e-mails a verification link to the
+destination), and after the link is opened, `NOTIFY=1 scripts/deploy.sh`.
+
 ## API
 
 `POST /v1/feedback`

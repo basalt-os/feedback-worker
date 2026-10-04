@@ -276,3 +276,102 @@ test("validate trims and normalizes line endings", () => {
   assert.equal(s.email, null);
   assert.equal(s.system, null);
 });
+
+// --- e-mail notification ---
+
+class FakeEmailMessage {
+  constructor(from, to, raw) {
+    this.from = from;
+    this.to = to;
+    this.raw = raw;
+  }
+}
+
+function mailEnv(extra = {}) {
+  const sent = [];
+  return {
+    sent,
+    env: env({
+      NOTIFY: {
+        async send(m) {
+          sent.push(m);
+        },
+      },
+      NOTIFY_FROM: "feedback-bot@obpkg.org",
+      NOTIFY_TO: "feedback@basalt-os.org",
+      EmailMessage: FakeEmailMessage,
+      ...extra,
+    }),
+  };
+}
+
+function decodeBody(raw) {
+  const body = raw.split("\r\n\r\n").slice(1).join("\r\n\r\n").replace(/\r\n/g, "");
+  return Buffer.from(body, "base64").toString("utf8");
+}
+
+test("a stored submission is e-mailed, with the person's address as Reply-To", async () => {
+  const { env: e, sent } = mailEnv();
+  const res = await handle(post({ ...good, message: "Ação: o instalador travou.\nSegunda linha", system: "VM, 4 GiB" }), e, NOW);
+  assert.equal(res.status, 201);
+  const { id } = await res.json();
+  assert.equal(sent.length, 1);
+  const m = sent[0];
+  assert.equal(m.from, "feedback-bot@obpkg.org");
+  assert.equal(m.to, "feedback@basalt-os.org");
+  const [head] = m.raw.split("\r\n\r\n");
+  assert.match(head, /^From: Basalt OS feedback <feedback-bot@obpkg\.org>$/m);
+  assert.match(head, /^To: <feedback@basalt-os\.org>$/m);
+  assert.match(head, /^Reply-To: <me@example\.org>$/m);
+  assert.match(head, new RegExp(`^Message-ID: <${id}@obpkg\\.org>$`, "m"));
+  const subject = head.match(/^Subject: =\?UTF-8\?B\?([^?]+)\?=$/m);
+  assert.ok(subject, head);
+  assert.equal(Buffer.from(subject[1], "base64").toString("utf8"), "[Basalt OS feedback] bug: Ação: o instalador travou.");
+  const body = decodeBody(m.raw);
+  assert.match(body, /Kind: bug/);
+  assert.match(body, new RegExp(`Id: ${id}`));
+  assert.match(body, /Ação: o instalador travou\.\r\nSegunda linha/);
+  assert.match(body, /System:\r\n\r\nVM, 4 GiB/);
+  assert.ok(!m.raw.includes("203.0.113.7"));
+  for (const line of m.raw.split("\r\n")) assert.ok(line.length <= 998);
+});
+
+test("no Reply-To without an e-mail, and a structured system object is pretty-printed", async () => {
+  const { env: e, sent } = mailEnv();
+  await handle(post({ kind: "idea", message: "x", source: "cli", system: { os: { name: "Basalt OS" } } }, { origin: null }), e, NOW);
+  assert.equal(sent.length, 1);
+  assert.ok(!/^Reply-To:/m.test(sent[0].raw));
+  assert.match(decodeBody(sent[0].raw), /"name": "Basalt OS"/);
+});
+
+test("a failing notification never loses or refuses the submission", async () => {
+  const { env: e } = mailEnv({
+    NOTIFY: {
+      async send() {
+        throw new Error("destination not verified");
+      },
+    },
+  });
+  const res = await handle(post(good), e, NOW);
+  assert.equal(res.status, 201);
+  assert.equal(e.FEEDBACK.submissions().length, 1);
+});
+
+test("the notification runs through waitUntil when the runtime gives a context", async () => {
+  const { env: e, sent } = mailEnv();
+  const pending = [];
+  const res = await handle(post(good), e, NOW, { waitUntil: (p) => pending.push(p) });
+  assert.equal(res.status, 201);
+  assert.equal(pending.length, 1);
+  await Promise.all(pending);
+  assert.equal(sent.length, 1);
+});
+
+test("honeypot and refused submissions send no e-mail; no binding means no e-mail", async () => {
+  const { env: e, sent } = mailEnv();
+  await handle(post({ ...good, website: "x" }), e, NOW);
+  await handle(post({ ...good, kind: "rant" }), e, NOW);
+  assert.equal(sent.length, 0);
+  const plain = env();
+  assert.equal((await handle(post(good), plain, NOW)).status, 201);
+});
