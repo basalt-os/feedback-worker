@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """List and read feedback submissions in the private R2 bucket.
 
-Uses R2's S3 API with a SigV4 signature (Python standard library only).
-Credentials come from files, never from the command line:
+Uses the Cloudflare REST API (R2 objects) with an API token that has R2
+read access (Python standard library only). Credentials come from files,
+never from the command line:
 
-  CF_ACCOUNT_ID_FILE        account id
-  R2_ACCESS_KEY_ID_FILE     R2 S3 access key id
-  R2_SECRET_ACCESS_KEY_FILE R2 S3 secret access key
+  CF_API_TOKEN_FILE   API token
+  CF_ACCOUNT_ID_FILE  account id
 
-They default to account-id, r2-access-key-id and r2-secret-access-key in
-CF_DIR (default $XDG_RUNTIME_DIR/obpkg-cf).
+They default to api-token and account-id in CF_DIR (default
+$XDG_RUNTIME_DIR/obpkg-cf).
 
   feedback-read.py list [--since 2026-10-01] [--kind bug] [--source web]
   feedback-read.py show ID            one submission (id, or its full key)
@@ -18,19 +18,15 @@ CF_DIR (default $XDG_RUNTIME_DIR/obpkg-cf).
 
 import argparse
 import datetime as dt
-import hashlib
-import hmac
 import json
 import os
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 
 BUCKET = os.environ.get("BUCKET", "basalt-feedback")
 PREFIX = "submissions/"
-S3NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 
 
 def read_secret(env, default_name):
@@ -46,66 +42,39 @@ def read_secret(env, default_name):
 
 class R2:
     def __init__(self):
-        self.account = read_secret("CF_ACCOUNT_ID_FILE", "account-id")
-        self.key_id = read_secret("R2_ACCESS_KEY_ID_FILE", "r2-access-key-id")
-        self.secret = read_secret("R2_SECRET_ACCESS_KEY_FILE", "r2-secret-access-key")
-        self.host = f"{self.account}.r2.cloudflarestorage.com"
+        account = read_secret("CF_ACCOUNT_ID_FILE", "account-id")
+        self._token = read_secret("CF_API_TOKEN_FILE", "api-token")
+        self.base = (f"https://api.cloudflare.com/client/v4/accounts/{account}"
+                     f"/r2/buckets/{BUCKET}/objects")
 
-    def _sign(self, method, path, query):
-        now = dt.datetime.now(dt.timezone.utc)
-        amz_date = now.strftime("%Y%m%dT%H%M%SZ")
-        day = now.strftime("%Y%m%d")
-        payload = hashlib.sha256(b"").hexdigest()
-        canon_query = "&".join(
-            f"{urllib.parse.quote(k, safe='-_.~')}={urllib.parse.quote(v, safe='-_.~')}"
-            for k, v in sorted(query.items()))
-        headers = {"host": self.host, "x-amz-content-sha256": payload, "x-amz-date": amz_date}
-        signed = ";".join(sorted(headers))
-        canon = "\n".join([
-            method, urllib.parse.quote(path, safe="/-_.~"), canon_query,
-            "".join(f"{k}:{headers[k]}\n" for k in sorted(headers)), signed, payload])
-        scope = f"{day}/auto/s3/aws4_request"
-        to_sign = "\n".join(["AWS4-HMAC-SHA256", amz_date, scope,
-                             hashlib.sha256(canon.encode()).hexdigest()])
-        k = ("AWS4" + self.secret).encode()
-        for part in (day, "auto", "s3", "aws4_request"):
-            k = hmac.new(k, part.encode(), hashlib.sha256).digest()
-        sig = hmac.new(k, to_sign.encode(), hashlib.sha256).hexdigest()
-        headers["authorization"] = (f"AWS4-HMAC-SHA256 Credential={self.key_id}/{scope}, "
-                                    f"SignedHeaders={signed}, Signature={sig}")
-        url = f"https://{self.host}{urllib.parse.quote(path, safe='/-_.~')}"
-        if canon_query:
-            url += "?" + canon_query
-        return url, headers
-
-    def get(self, path, query=None):
-        url, headers = self._sign("GET", path, query or {})
-        req = urllib.request.Request(url, headers=headers)
+    def _get(self, url):
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {self._token}"})
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return None
-            sys.exit(f"feedback-read: GET {path}: HTTP {e.code}")
+            sys.exit(f"feedback-read: HTTP {e.code} for {url.split('?')[0]}")
 
     def keys(self, start_after=""):
-        token = None
+        cursor = None
         while True:
-            q = {"list-type": "2", "prefix": PREFIX}
+            q = {"prefix": PREFIX, "per_page": "1000"}
             if start_after:
-                q["start-after"] = start_after
-            if token:
-                q["continuation-token"] = token
-            root = ET.fromstring(self.get(f"/{BUCKET}", q))
-            for c in root.iter(f"{S3NS}Contents"):
-                yield c.find(f"{S3NS}Key").text
-            if root.findtext(f"{S3NS}IsTruncated") != "true":
+                q["start_after"] = start_after
+            if cursor:
+                q["cursor"] = cursor
+            page = json.loads(self._get(self.base + "?" + urllib.parse.urlencode(q)))
+            for obj in page.get("result") or []:
+                yield obj["key"]
+            info = page.get("result_info") or {}
+            cursor = info.get("cursor")
+            if not info.get("is_truncated") or not cursor:
                 return
-            token = root.findtext(f"{S3NS}NextContinuationToken")
 
     def submission(self, key):
-        body = self.get(f"/{BUCKET}/{key}")
+        body = self._get(self.base + "/" + urllib.parse.quote(key, safe="/"))
         return None if body is None else json.loads(body)
 
 

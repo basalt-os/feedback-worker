@@ -54,6 +54,16 @@ cf() {
 
 subdomain() { cf GET /workers/subdomain | jq -r '.result.subdomain'; }
 
+# ensure_subdomain: an account without a workers.dev subdomain gets
+# WORKERS_SUBDOMAIN (default openbasalt), once; it names every Worker URL.
+ensure_subdomain() {
+  if ! cf GET /workers/subdomain >/dev/null 2>&1; then
+    cf PUT /workers/subdomain -H 'Content-Type: application/json' \
+      --data "{\"subdomain\":\"${WORKERS_SUBDOMAIN:-openbasalt}\"}" >/dev/null
+    echo "workers.dev subdomain ${WORKERS_SUBDOMAIN:-openbasalt} created"
+  fi
+}
+
 if [[ "${1:-}" == "--check" ]]; then
   cf GET "/r2/buckets/$BUCKET" | jq -c '{bucket: .result.name, created: .result.creation_date, location: .result.location}' || true
   cf GET "/workers/scripts/$NAME/subdomain" | jq -c '{workers_dev: .result.enabled}' || true
@@ -99,6 +109,7 @@ cf PUT "/workers/scripts/$NAME" \
 echo "worker $NAME uploaded"
 
 # 4. Serve it on workers.dev (no zone route), without preview URLs.
+ensure_subdomain
 cf POST "/workers/scripts/$NAME/subdomain" -H 'Content-Type: application/json' \
   --data '{"enabled": true, "previews_enabled": false}' >/dev/null
 url="https://$NAME.$(subdomain).workers.dev"

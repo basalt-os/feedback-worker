@@ -1,5 +1,7 @@
 # feedback-worker
 
+Endpoint: `https://basalt-feedback.openbasalt.workers.dev/v1/feedback`
+
 The endpoint behind the feedback form on [basalt-os.org](https://basalt-os.org)
 and the `basalt feedback` command on Basalt OS. It is a single Cloudflare
 Worker in plain JavaScript, with no dependencies, that checks each
@@ -83,15 +85,16 @@ npx wrangler@4 dev --local            # the Worker with a local R2 (miniflare)
 `scripts/deploy.sh` uses the Cloudflare API directly (curl and jq, no
 wrangler): it creates the private bucket `basalt-feedback` if it is
 missing, sets the lifecycle rules, uploads the Worker with its bindings and
-serves it on the account's workers.dev subdomain. It reads the API token
+serves it on the account's workers.dev subdomain (created as `openbasalt`
+when the account has none). It reads the API token
 and the account id from files (`CF_API_TOKEN_FILE`, `CF_ACCOUNT_ID_FILE`),
 never from the command line. `scripts/deploy.sh --check` shows what exists.
 
 ## Read submissions
 
 `scripts/feedback-read.py` (Python standard library only) reads the bucket
-over R2's S3 API with keys from files (`CF_ACCOUNT_ID_FILE`,
-`R2_ACCESS_KEY_ID_FILE`, `R2_SECRET_ACCESS_KEY_FILE`):
+through the Cloudflare REST API with an API token that can read R2, from
+files (`CF_API_TOKEN_FILE`, `CF_ACCOUNT_ID_FILE`):
 
 ```sh
 scripts/feedback-read.py list --since 2026-10-01
