@@ -94,7 +94,7 @@ destination), and after the link is opened, `NOTIFY=1 scripts/deploy.sh`.
 ## Test
 
 ```sh
-node --test test/                     # unit tests, an in-memory bucket
+node --test test/*.test.js                     # unit tests, an in-memory bucket
 npx wrangler@4 dev --local            # the Worker with a local R2 (miniflare)
 ```
 

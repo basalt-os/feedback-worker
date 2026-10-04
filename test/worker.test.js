@@ -1,5 +1,5 @@
 // Unit tests of the feedback Worker with an in-memory R2 bucket.
-// Run: node --test test/
+// Run: node --test test/*.test.js
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { handle, validate, LIMITS } from "../src/worker.js";
