@@ -56,7 +56,9 @@ request data is in it.
 Setup, once: `scripts/email-routing.sh enable` (Email Routing on the
 sending zone, which adds its MX and SPF records), `scripts/email-routing.sh
 add-destination` (Cloudflare e-mails a verification link to the
-destination), and after the link is opened, `NOTIFY=1 scripts/deploy.sh`.
+destination), and after the link is opened, `scripts/deploy.sh` (it
+deploys with the notification unless `NOTIFY=0`). It is on for the
+production endpoint since 2026-10-04.
 
 ## API
 

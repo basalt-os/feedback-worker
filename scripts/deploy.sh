@@ -20,9 +20,10 @@ ALLOWED_ORIGIN="${ALLOWED_ORIGIN:-https://basalt-os.org}"
 SITE_URL="${SITE_URL:-https://basalt-os.org}"
 RATE_PER_HOUR="${RATE_PER_HOUR:-5}"
 DAILY_CAP="${DAILY_CAP:-500}"
-# E-mail notification: set NOTIFY=1 once Email Routing on obpkg.org is on
-# and NOTIFY_TO is a verified destination (scripts/email-routing.sh).
-NOTIFY="${NOTIFY:-0}"
+# E-mail notification (on since 2026-10-04): needs Email Routing on the
+# sending zone and NOTIFY_TO verified (scripts/email-routing.sh). NOTIFY=0
+# deploys without it.
+NOTIFY="${NOTIFY:-1}"
 NOTIFY_FROM="${NOTIFY_FROM:-feedback-bot@obpkg.org}"
 NOTIFY_TO="${NOTIFY_TO:-feedback@basalt-os.org}"
 COMPAT_DATE="2026-09-01"
