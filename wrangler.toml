@@ -1,0 +1,16 @@
+# Used by `wrangler dev` for local tests. Production is deployed with
+# scripts/deploy.sh through the Cloudflare API (same settings).
+name = "basalt-feedback"
+main = "src/worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[vars]
+ALLOWED_ORIGIN = "https://basalt-os.org"
+SITE_URL = "https://basalt-os.org"
+RATE_PER_HOUR = "5"
+DAILY_CAP = "500"
+
+[[r2_buckets]]
+binding = "FEEDBACK"
+bucket_name = "basalt-feedback"

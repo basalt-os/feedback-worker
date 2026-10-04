@@ -1,0 +1,10 @@
+{
+  "name": "basalt-feedback-worker",
+  "private": true,
+  "description": "Basalt OS feedback endpoint (Cloudflare Worker)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/"
+  }
+}
