@@ -31,6 +31,10 @@ Each submission is one object, `submissions/YYYY/MM/DD/<id>.json`:
   it (free text from the form, or the parts of the report the person
   accepted in `basalt feedback`); `source` is `web`, `cli` or `voice`;
   `client` and `lang` are what the command line sends about itself.
+- Submissions are kept 180 days from when they are stored. A lifecycle
+  rule on the bucket (`submissions-180d`, set by `scripts/deploy.sh`)
+  deletes them after that, e-mail address included. The notification
+  e-mail below is a separate copy in the maintainers' mailbox.
 - No IP address, user agent, referrer, cookie or any other request data is
   stored with a submission. The Worker sets no cookies and calls no other
   service.

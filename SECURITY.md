@@ -2,8 +2,10 @@
 
 This Worker receives feedback from anyone on the internet and stores it in
 a private bucket, sometimes with an e-mail address the person chose to
-give. A way to read or change stored submissions, to learn a sender's IP
-address, to inject headers into the notification e-mail, to get around the
+give. Submissions are kept 180 days and then deleted by a lifecycle rule
+on the bucket (see "What it stores" in the README). A way to read or
+change stored submissions, to learn a sender's IP address, to inject
+headers into the notification e-mail, to get around the
 origin and rate limits, or to reach the operator's terminal through a
 submission is a security problem. Please report it privately and give us
 time to fix it before it is disclosed.

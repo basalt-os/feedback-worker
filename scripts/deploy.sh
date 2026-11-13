@@ -87,15 +87,19 @@ fi
 
 # 2. Lifecycle: rate-limit counters and the daily salts go after two days,
 #    so an address hash cannot be linked to an address afterwards.
+#    Submissions (which may hold an e-mail address) are kept 180 days
+#    (15552000 s) from when they were stored, then deleted.
 cf PUT "/r2/buckets/$BUCKET/lifecycle" -H 'Content-Type: application/json' --data @- >/dev/null <<'EOF'
 {"rules": [
   {"id": "ratelimit-2d", "enabled": true, "conditions": {"prefix": "ratelimit/"},
    "deleteObjectsTransition": {"condition": {"type": "Age", "maxAge": 172800}}},
   {"id": "salt-2d", "enabled": true, "conditions": {"prefix": "meta/salt/"},
-   "deleteObjectsTransition": {"condition": {"type": "Age", "maxAge": 172800}}}
+   "deleteObjectsTransition": {"condition": {"type": "Age", "maxAge": 172800}}},
+  {"id": "submissions-180d", "enabled": true, "conditions": {"prefix": "submissions/"},
+   "deleteObjectsTransition": {"condition": {"type": "Age", "maxAge": 15552000}}}
 ]}
 EOF
-echo "lifecycle rules set (ratelimit/, meta/salt/: 2 days)"
+echo "lifecycle rules set (ratelimit/, meta/salt/: 2 days; submissions/: 180 days)"
 
 # 3. The Worker, an ES module with its bindings.
 jq -n --arg compat "$COMPAT_DATE" --arg bucket "$BUCKET" --arg origin "$ALLOWED_ORIGIN" \
