@@ -4,7 +4,7 @@
 //
 // No third-party services, no cookies, no tracking. The client's IP address
 // is never stored with a submission. For rate limiting only, a SHA-256 of
-// the address with a random salt that changes every day is kept as the name
+// the address (an IPv6 address by its /64) with a random salt that changes every day is kept as the name
 // of a small counter object; the bucket's lifecycle rules delete the salts
 // and the counters after two days, after which the hashes cannot be linked
 // to an address any more.
@@ -113,9 +113,34 @@ async function readBody(request) {
 
 const chars = (s) => [...s].length;
 
-// Control characters other than tab and newline have no place in feedback.
+// Control characters other than tab and newline have no place in feedback:
+// C0 controls, DEL, C1 controls (U+0080 to U+009F; a terminal may act on
+// U+009B CSI or U+009D OSC when an operator reads the feedback), and the
+// bidirectional overrides and isolates (U+202A to U+202E, U+2066 to
+// U+2069), which can make text read differently from what it is.
 // eslint-disable-next-line no-control-regex
-const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/;
+
+// hasControl reports whether any string inside v (object keys included)
+// holds a refused character. It walks the value without recursion, so a
+// deeply nested object cannot exhaust the stack.
+function hasControl(v) {
+  const stack = [v];
+  while (stack.length > 0) {
+    const x = stack.pop();
+    if (typeof x === "string") {
+      if (CONTROL.test(x)) return true;
+    } else if (Array.isArray(x)) {
+      stack.push(...x);
+    } else if (x && typeof x === "object") {
+      for (const [k, val] of Object.entries(x)) {
+        if (CONTROL.test(k)) return true;
+        stack.push(val);
+      }
+    }
+  }
+  return false;
+}
 
 const EMAIL = /^[^\s@<>()"',;:]+@[^\s@<>()"',;:]+\.[A-Za-z]{2,}$/;
 const CLIENT = /^[A-Za-z0-9._/+ -]+$/;
@@ -145,7 +170,7 @@ export function validate(fields, { fromBrowser }) {
   if (CONTROL.test(message)) throw new Refusal(400, "bad_message");
 
   const email = opt("email", "bad_email");
-  if (email !== "" && (email.length > LIMITS.email || !EMAIL.test(email))) {
+  if (email !== "" && (email.length > LIMITS.email || !EMAIL.test(email) || CONTROL.test(email))) {
     throw new Refusal(400, "bad_email");
   }
 
@@ -161,6 +186,7 @@ export function validate(fields, { fromBrowser }) {
     if (new TextEncoder().encode(s).byteLength > LIMITS.systemJSON) {
       throw new Refusal(400, "system_too_long");
     }
+    if (hasControl(rawSystem)) throw new Refusal(400, "bad_system");
     system = rawSystem;
   } else if (rawSystem != null) {
     throw new Refusal(400, "bad_system");
@@ -228,6 +254,50 @@ async function readCount(bucket, key) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+// rateSubject returns what the hourly limit counts: an IPv4 address as it
+// is, an IPv6 address by its /64 network (one customer or VPS usually gets
+// a whole /64, so counting single IPv6 addresses would let one client
+// rotate through them and use up the daily cap), and "invalid" for
+// anything that is not an address, so it does not get a fresh counter per
+// spelling.
+export function rateSubject(ip) {
+  const s = String(ip || "").trim().replace(/%.*$/, "").toLowerCase();
+  const v4 = (t) => {
+    const parts = t.split(".");
+    if (parts.length !== 4) return null;
+    for (const p of parts) {
+      if (!/^\d{1,3}$/.test(p) || Number(p) > 255) return null;
+    }
+    return parts.map(Number).join(".");
+  };
+  if (!s.includes(":")) return v4(s) || "invalid";
+
+  const halves = s.split("::");
+  if (halves.length > 2) return "invalid";
+  const groups = (part) => (part === "" ? [] : part.split(":"));
+  const head = groups(halves[0]);
+  const tail = halves.length === 2 ? groups(halves[1]) : [];
+  // An embedded IPv4 address (::ffff:192.0.2.1) is the last two groups.
+  const all = halves.length === 2 ? tail : head;
+  const last = all[all.length - 1];
+  if (last && last.includes(".")) {
+    const a = v4(last);
+    if (!a) return "invalid";
+    const n = a.split(".").map(Number);
+    all.splice(all.length - 1, 1, ((n[0] << 8) | n[1]).toString(16), ((n[2] << 8) | n[3]).toString(16));
+  }
+  const given = head.length + tail.length;
+  if (halves.length === 2 ? given > 7 : given !== 8) return "invalid";
+  const full = [...head, ...Array(8 - given).fill("0"), ...tail];
+  if (!full.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return "invalid";
+  const nums = full.map((g) => parseInt(g, 16));
+  // IPv4-mapped: count it as the IPv4 address.
+  if (nums.slice(0, 5).every((n) => n === 0) && nums[5] === 0xffff) {
+    return [nums[6] >> 8, nums[6] & 255, nums[7] >> 8, nums[7] & 255].join(".");
+  }
+  return nums.slice(0, 4).map((n) => n.toString(16)).join(":") + "::/64";
+}
+
 // rateLimit counts the submission against the address's hourly limit and
 // the daily total, or throws a Refusal. R2 has no atomic increment, so the
 // counts are approximate under concurrency; that is enough here.
@@ -241,7 +311,7 @@ async function rateLimit(bucket, env, ip, now) {
   if (total >= Number(conf(env, "DAILY_CAP"))) throw new Refusal(503, "busy", { "Retry-After": "3600" });
 
   const salt = await dailySalt(bucket, day);
-  const who = (await sha256(`${salt}|${ip}`)).slice(0, 32);
+  const who = (await sha256(`${salt}|${rateSubject(ip)}`)).slice(0, 32);
   const key = `ratelimit/${day}/${hour}/${who}`;
   const n = await readCount(bucket, key);
   if (n >= Number(conf(env, "RATE_PER_HOUR"))) {

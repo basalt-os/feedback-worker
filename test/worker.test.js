@@ -2,7 +2,7 @@
 // Run: node --test test/*.test.js
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { handle, validate, LIMITS } from "../src/worker.js";
+import { handle, validate, LIMITS, rateSubject } from "../src/worker.js";
 
 // memBucket is the part of the R2 binding the Worker uses.
 function memBucket() {
@@ -374,4 +374,63 @@ test("honeypot and refused submissions send no e-mail; no binding means no e-mai
   assert.equal(sent.length, 0);
   const plain = env();
   assert.equal((await handle(post(good), plain, NOW)).status, 201);
+});
+
+test("rate limit subjects: IPv4 per address, IPv6 per /64", () => {
+  assert.equal(rateSubject("203.0.113.7"), "203.0.113.7");
+  assert.equal(rateSubject("2001:db8:1:2::1"), "2001:db8:1:2::/64");
+  assert.equal(rateSubject("2001:0DB8:0001:0002:ffff:eeee:dddd:cccc"), "2001:db8:1:2::/64");
+  assert.equal(rateSubject("2001:db8::1"), "2001:db8:0:0::/64");
+  assert.equal(rateSubject("::1"), "0:0:0:0::/64");
+  assert.equal(rateSubject("fe80::1%eth0"), "fe80:0:0:0::/64");
+  // IPv4-mapped addresses count as the IPv4 address.
+  assert.equal(rateSubject("::ffff:198.51.100.9"), "198.51.100.9");
+  // Anything unparsable shares one bucket rather than getting a free one.
+  assert.equal(rateSubject("not-an-ip"), "invalid");
+  assert.equal(rateSubject("1:2:3:4:5:6:7:8:9"), "invalid");
+  assert.equal(rateSubject(""), "invalid");
+});
+
+test("rate limit: addresses in one IPv6 /64 share the hourly limit", async () => {
+  const e = env();
+  for (let i = 1; i <= 5; i++) {
+    const res = await handle(post(good, { ip: `2001:db8:aa:bb::${i}` }), e, NOW);
+    assert.equal(res.status, 201, `submission ${i}`);
+  }
+  const res = await handle(post(good, { ip: "2001:db8:aa:bb:ffff:1:2:3" }), e, NOW);
+  assert.equal(res.status, 429);
+  // The next /64 is another subject.
+  assert.equal((await handle(post(good, { ip: "2001:db8:aa:bc::1" }), e, NOW)).status, 201);
+});
+
+test("C1 controls and bidi overrides or isolates are refused in every text field", async () => {
+  const bad = ["\u009b31mX", "\u0085", "\u009d0;title\u0007", "a‮b", "a‪b", "a⁦b", "a⁩b"];
+  for (const s of bad) {
+    for (const [body, code, opts] of [
+      [{ ...good, message: `hello ${s}` }, "bad_message"],
+      [{ ...good, system: `kernel ${s}` }, "bad_system"],
+      [{ ...good, email: `me${s}@example.org` }, "bad_email"],
+      [{ ...good, source: "cli", system: { os: `Basalt ${s}` } }, "bad_system", { origin: null }],
+      [{ ...good, source: "cli", system: { nested: [{ v: s }] } }, "bad_system", { origin: null }],
+      [{ ...good, source: "cli", system: { [`k${s}`]: "v" } }, "bad_system", { origin: null }],
+      [{ ...good, source: "cli", system: { c0: "\u001b[2J" } }, "bad_system", { origin: null }],
+    ]) {
+      const e = env();
+      const res = await handle(post(body, opts), e, NOW);
+      assert.equal(res.status, 400, `${code} ${JSON.stringify(s)}`);
+      assert.equal((await res.json()).error, code);
+      assert.equal(e.FEEDBACK.submissions().length, 0);
+    }
+  }
+  // Newlines and tabs stay allowed where text allows them, also in the
+  // CLI system object; other non-ASCII text is fine.
+  const ok = await handle(
+    post(
+      { ...good, message: "linha 1\n\tlinha 2 ação 日本", source: "cli", system: { log: "a\n\tb", n: 3, ok: true } },
+      { origin: null },
+    ),
+    env(),
+    NOW,
+  );
+  assert.equal(ok.status, 201);
 });
