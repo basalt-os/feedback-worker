@@ -36,7 +36,9 @@ Each submission is one object, `submissions/YYYY/MM/DD/<id>.json`:
   service.
 - Rate limiting needs to tell senders apart for a while. The Worker keeps,
   for each sender and hour, a small counter object whose name is a SHA-256
-  of the address with a random salt that changes every day. The bucket's
+  of the address with a random salt that changes every day. A sender is an
+  IPv4 address, or an IPv6 /64 network (the block one customer usually
+  gets), so rotating addresses inside it does not reset the limit. The bucket's
   lifecycle rules delete the counters and the salts after two days; after
   that, nobody can link a counter to an address.
 
@@ -70,6 +72,12 @@ production endpoint since 2026-10-04.
 | `message` | 1 to 5000 characters after trimming (required) |
 | `email` | optional, up to 254 characters |
 | `system` | optional: text up to 4000 characters, or (command line only) a JSON object up to 16 KiB |
+
+Text fields (`message`, `email`, `system`, including every key and string
+inside a `system` object) may not hold control characters other than
+newline and tab: C0 controls, DEL, C1 controls (U+0080 to U+009F) and the
+bidirectional overrides and isolates (U+202A to U+202E, U+2066 to U+2069)
+are refused with `bad_message`, `bad_email` or `bad_system`.
 | `source` | command line only: `cli` (default) or `voice` |
 | `client`, `lang` | optional, short (`basalt-assistant/0.9.0`, `pt_BR`) |
 | `website` | must stay empty (a field hidden from people; bots fill it) |
@@ -88,7 +96,8 @@ production endpoint since 2026-10-04.
 - A plain form post (`application/x-www-form-urlencoded`, works without
   JavaScript) is answered with a redirect to `/feedback/sent.html` on the
   site, or to `/feedback/problem.html?reason=CODE`.
-- Limits: 5 submissions per sender per hour, 500 per day in total
+- Limits: 5 submissions per sender (IPv4 address or IPv6 /64) per hour,
+  500 per day in total
   (`RATE_PER_HOUR`, `DAILY_CAP`).
 
 `GET /v1/health` answers `{"ok": true}`.

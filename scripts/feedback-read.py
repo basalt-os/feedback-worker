@@ -78,6 +78,30 @@ class R2:
         return None if body is None else json.loads(body)
 
 
+def safe(text, keep=""):
+    """Escape every non-printable character of text as \\uXXXX.
+
+    Submissions are untrusted text. The Worker refuses control and bidi
+    characters, but this reader is the second line of defense: whatever is
+    stored, nothing reaches the operator's terminal as a raw control (C0,
+    C1 such as U+009B CSI, bidi overrides, line separators). Characters in
+    keep (newline for indented JSON) stay as they are. The escape is also
+    valid inside a JSON string, so the JSON output stays parseable.
+    """
+    out = []
+    for ch in text:
+        if ch in keep or ch.isprintable():
+            out.append(ch)
+            continue
+        cp = ord(ch)
+        if cp > 0xFFFF:
+            cp -= 0x10000
+            out.append(f"\\u{0xD800 + (cp >> 10):04x}\\u{0xDC00 + (cp & 0x3FF):04x}")
+        else:
+            out.append(f"\\u{cp:04x}")
+    return "".join(out)
+
+
 def key_for(ident):
     if ident.startswith(PREFIX):
         return ident
@@ -118,10 +142,10 @@ def main():
         sub = r2.submission(key_for(args.id))
         if sub is None:
             sys.exit(f"feedback-read: no submission {args.id}")
-        print(json.dumps(sub, indent=2, ensure_ascii=False))
+        print(safe(json.dumps(sub, indent=2, ensure_ascii=False), keep="\n"))
     elif args.cmd == "dump":
         for _, sub in selected(r2, args):
-            print(json.dumps(sub, ensure_ascii=False))
+            print(safe(json.dumps(sub, ensure_ascii=False)))
     else:
         n = 0
         for _, sub in selected(r2, args):
@@ -131,7 +155,8 @@ def main():
                 first = first[:67] + "..."
             mail = "mail" if sub.get("email") else "    "
             sysinfo = "sys" if sub.get("system") else "   "
-            print(f"{sub.get('id')}  {sub.get('kind'):<5} {sub.get('source'):<5} {mail} {sysinfo}  {first}")
+            line = f"{sub.get('id')}  {sub.get('kind')!s:<5} {sub.get('source')!s:<5} {mail} {sysinfo}  {first}"
+            print(safe(line))
         print(f"{n} submission(s)", file=sys.stderr)
 
 

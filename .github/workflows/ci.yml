@@ -13,4 +13,5 @@ jobs:
         with:
           node-version: 22
       - run: node --test test/*.test.js
+      - run: python3 -m unittest discover -s test -p '*_test.py'
       - run: bash -n scripts/deploy.sh && python3 -m py_compile scripts/feedback-read.py
